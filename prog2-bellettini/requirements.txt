@@ -1,0 +1,4 @@
+requests
+youtube_dl
+BeautifulSoup4
+html5lib
