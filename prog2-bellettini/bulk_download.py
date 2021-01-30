@@ -21,6 +21,7 @@ import time
 import json
 import urllib
 import argparse
+import pathlib
 
 import requests
 import youtube_dl
@@ -50,71 +51,6 @@ if PROXY_ENABLED:
 if SUPPRESS_WARNINGS:
     __import__('urllib3').disable_warnings(__import__('urllib3').exceptions.InsecureRequestWarning)
 
-# Endpoints
-TARGET = 'https://homes.di.unimi.it/bellettini/sito/progII.html'
-
-def mkdir(path):
-    try:
-        pathlib.Path(path).mkdir(parents=True, exist_ok=True)
-    except FileExistsError:
-        pass
-
-def print_flush(message, end='', file=sys.stdout, flush=True):
-    print(message, end=end, file=file, flush=flush)
-
-# https://stackoverflow.com/questions/1094841/
-def sizeof_fmt(num, suffix='B'):
-    for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
-        if abs(num) < 1024.0:
-            return '%3.1f%s%s' % (num, unit, suffix)
-        num /= 1024.0
-    return '%.1f%s%s' % (num, 'Yi', suffix)
-
-# BASE https://stackoverflow.com/questions/16694907/
-#  MOD https://stackoverflow.com/questions/15644964/
-def download_file(session, url, auth=None, name=None, folder=None):
-    if name is None:
-        name = url.split('/')[-1]
-
-    if folder is not None:
-        mkdir(folder)
-        name = os.path.join(folder, name)
-    
-    # NOTE the stream=True parameter below
-    with session.get(url, auth=auth, stream=True) as r:
-        r.raise_for_status()
-
-        with open(name, 'wb') as f:
-            dl = 0
-            file_size = r.headers.get('content-length')
-
-            if file_size:
-                file_size = int(file_size)
-
-            start = time.perf_counter()
-
-            for chunk in r.iter_content(chunk_size=8192):
-                # If you have chunk encoded response uncomment if
-                # and set chunk_size parameter to None.
-                #if chunk:
-                f.write(chunk)
-
-                if file_size:
-                    dl += len(chunk)
-                    done = int(50 * dl / file_size)
-                    #print_flush('\r[{}{}] {:3.1f} Mbps'.format('=' * done, ' ' * (50 - done), dl // (time.perf_counter() - start) / 100000))
-                    print_flush('\r\x1b[K')
-                    print_flush('[{}{}] {}/{} {:3.1f} Mbps'.format('=' * done, ' ' * (50 - done), sizeof_fmt(dl), sizeof_fmt(file_size), dl // (time.perf_counter() - start) / 100000))
-
-    print(' Done!')
-    return name
-
-
-def slugify(string):
-    simple_string = ''.join(e for e in string if e.isalnum() or e == ' ')
-
-    return '-'.join(simple_string.lower().strip().split())
-
 
 class BellettiniScraper():
     endpoints = {
@@ -132,6 +68,7 @@ class BellettiniScraper():
         self.session.proxies = proxies
         self.session.headers = headers
         self.session.verify = VERIFY_ENABLED
+        self.session.auth = self.auth
 
         # Test credentials
         r = self.session.get(self.endpoints['login'], auth=(self.username, self.password))
@@ -209,7 +146,82 @@ class BellettiniScraper():
                 yield link
 
 
+class Downloader():
+    def __init__(self, download_folder=None):
+        if download_folder:
+            self.download_folder = download_folder
+            pathlib.Path(self.download_folder).mkdir(parents=True, exist_ok=True)
+        else:
+            self.download_folder = ''
+
+    # https://stackoverflow.com/questions/1094841/
+    @staticmethod
+    def sizeof_fmt(num, suffix='B'):
+        for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
+            if abs(num) < 1024.0:
+                return '%3.1f%s%s' % (num, unit, suffix)
+            num /= 1024.0
+        return '%.1f%s%s' % (num, 'Yi', suffix)
+
+    def download(self, url, session=None, name=None):
+        # Extract name from url
+        if name is None:
+            name = url.split('/')[-1]
+
+        output_file = os.path.join(self.download_folder, name)
+
+        # Prepare session
+        if session:
+            session_ = session
+        else:
+            session_ = requests.session()
+
+        with session_.get(url, stream=True) as r:
+            r.raise_for_status()
+
+            # Check if Transfer-Encoding is chunked
+            if r.headers.get('Transfer-Encoding') and r.headers.get('Transfer-Encoding').lower() == 'chunked':
+                chunk_size = None
+            else:
+                chunk_size = 4096
+
+            # Estimate time
+            file_size = r.headers.get('Content-Length')
+            if file_size:
+                file_size = int(file_size)
+
+            downloaded = 0
+            start_time = time.perf_counter()
+
+            # Save file
+            with open(name, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    f.write(chunk)
+
+            #         if file_size:
+            #             downloaded += len(chunk)
+
+            #             downloaded_formatted = self.sizeof_fmt(downloaded)
+            #             file_size_formatted = self.sizeof_fmt(file_size)
+            #             mbps = downloaded // (time.perf_counter() - start_time) / 100000
+            #             percentage = downloaded / file_size * 100
+
+            #             print('\r\x1b[K{} of {} [{:3.1f}%] at {:3.1f} Mbps'.format(downloaded_formatted, file_size_formatted, percentage, mbps), end='', flush=True)
+
+            # print('\r\x1b[KDone!')
+
+
+        return True
+
+
+def slugify(string):
+    simple_string = ''.join(e for e in string if e.isalnum() or e == ' ')
+
+    return '-'.join(simple_string.lower().strip().split())
+
+
 def main(args):
+    downloader = Downloader('files')
     scraper = BellettiniScraper(args.username, args.password)
 
     # Download all files if user didn't specify anything
@@ -221,7 +233,7 @@ def main(args):
     if args.files:
         for link in scraper.get_files_links():
             print(link)
-            download_file(scraper.session, link, auth=scraper.auth, name=link.split('down.php?FILENAME=')[1])
+            downloader.download(link, scraper.session, name=link.split('down.php?FILENAME=')[1])
 
     # Download videos
     if args.videos:
@@ -235,8 +247,8 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('username', help='your unimi.it email')
-    parser.add_argument('password', help='your unimi.it password')
+    parser.add_argument('username', help='your @studenti.unimi.it email')
+    parser.add_argument('password', help='your @studenti.unimi.it password')
     parser.add_argument('--videos', help='download YouTube videos', action='store_true')
     parser.add_argument('--files', help='download files', action='store_true')
     main(parser.parse_args())
