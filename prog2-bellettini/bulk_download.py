@@ -167,7 +167,7 @@ class Downloader():
         # Extract name from url
         if name is None:
             name = url.split('/')[-1]
-
+            
         output_file = os.path.join(self.download_folder, name)
 
         # Prepare session
@@ -194,7 +194,7 @@ class Downloader():
             start_time = time.perf_counter()
 
             # Save file
-            with open(name, 'wb') as f:
+            with open(output_file, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=chunk_size):
                     f.write(chunk)
 
